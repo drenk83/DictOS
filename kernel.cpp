@@ -3,7 +3,7 @@ __asm("jmp kmain");
 #define VIDEO_BUF_PTR (0xb8000)
 #define IDT_TYPE_INTR (0x0E)
 #define IDT_TYPE_TRAP (0x0F)
-// Селектор секции кода, установленный загрузчиком ОС
+// Селектор секции кода, установленный загрузчиком ОС/
 #define GDT_CS (0x8)
 #define PIC1_PORT (0x20)
 
