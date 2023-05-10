@@ -13,7 +13,7 @@ start:
 user_input:
     ; saves video buffer addr in %edi
     mov edi, 0xb8000
-    ; dsfs
+    ;  dsfs
     mov edx, selected_letters
     mov ecx, alphabet
 

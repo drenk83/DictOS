@@ -16,8 +16,8 @@ __asm("jmp kmain");
 #define MAX_COMMAND_LENGTH (40)
 
 char userinput[40];
-char cmd_command[20];
-char cmd_arg[30];
+unsigned char cmd_command[20];
+unsigned char cmd_arg[30];
 char loader_str[27];
 
 int user_color = 0x02;
@@ -25,7 +25,7 @@ int cmd_color = 0x07;
 
 unsigned int cur_cursor = 0; // позиция курсора
 unsigned int current_strnum = 0;  // Количество символов в строке
-unsigned int loader_len = 0; // Длина строки из загрузчика
+int loader_len = 0; // Длина строки из загрузчика
 
 void out_str();
 void default_intr_handler();
@@ -40,20 +40,43 @@ void keyb_init();
 void keyb_handler();
 void keyb_process_keys();
 
-void cursor_moveto();
+void cursor_moveto(unsigned int strnum, unsigned int pos);
 
 void from_loader();
 void on_key();
 void backspace_key();
 void enter_key();
-void print_symbol();
+void print_symbol(unsigned char scan_code);
 char scan_code_to_ascii();
 
 void parsing();
 void command_handler();
 void clr_scr();
 void info_command();
-void shutdown_command();
+static inline void shutdown_command();
+void unknown_command();
+
+/* Translation from scan code to ASCII */
+char scan_code_to_symbol[] = {
+    0, 0,
+    '1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
+    0, 0, 0, 0,
+    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p',
+    0, 0, 0, 0,
+    'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l',
+    0, 0, 0, 0, 0,
+    'z', 'x', 'c', 'v', 'b', 'n', 'm',
+    0, 0,
+    '/',
+    0,
+    '*',
+    0,
+    ' ',
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    '-',
+    0, 0, 0,
+    '+'
+};
 
 bool strcmp(unsigned char* str1, const char* str2)
 {
@@ -81,26 +104,6 @@ void out_str(int color, const char* ptr, unsigned int strnum)
 }
 
 const char* g_test = "This is test string.";
-
-extern "C" int kmain()
-{
-    intr_disable();
-    intr_init();
-    keyb_init();
-
-    intr_start();
-    intr_enable();
-    //const char* hello = "Welcome to HelloWorldOS (gcc edition)!";
-    // Вывод строки
-    // out_str(0x07, hello, 0);
-    // out_str(0x07, g_test, 1);
-    // Бесконечный цикл
-    while(1)
-    {
-        asm("hlt");
-    }
-    return 0;
-}
 
 // Структура описывает данные об обработчике прерывания
 struct idt_entry
@@ -186,6 +189,11 @@ static inline void outb (unsigned short port, unsigned char data) // Запис�
     asm volatile ("outb %b0, %w1" : : "a" (data), "Nd" (port));
 }
 
+static inline void outw(unsigned int port, unsigned int data)
+{
+	asm volatile ("outw %w0, %w1" : : "a" (data), "Nd" (port));
+}
+
 void from_loader()
 {
     char *ptr = (char *)0x9000;
@@ -206,7 +214,7 @@ void keyb_init()
 {
     // Регистрация обработчика прерывания
     intr_reg_handler(0x09, GDT_CS, 0x80 | IDT_TYPE_INTR, keyb_handler);
-    // segm_sel=0x8, P=1, DPL=0, Type=Intr
+    //  segm_sel=0x8, P=1, DPL=0, Type=Intr
     // Разрешение только прерываний клавиатуры от контроллера 8259
     outb(PIC1_PORT + 1, 0xFF ^ 0x02); // 0xFF - все прерывания, 0x02 - бит IRQ1 (клавиатура).
     // Разрешены будут только прерывания, чьи биты установлены в 0
@@ -224,29 +232,33 @@ void keyb_handler()
 
 void keyb_process_keys()
 {
-// Проверка что буфер PS/2 клавиатуры не пуст (младший бит присутствует)
+//  Проверка что буфер PS/2 клавиатуры не пуст (младший бит присутствует)
     if (inb(0x64) & 0x01)
     {
         unsigned char scan_code;
         unsigned char state;
         scan_code = inb(0x60); // Считывание символа с PS/2 клавиатуры
-        if (scan_code < 128) // Скан-коды выше 128 - это отпускание клавиши
-            on_key(scan_code);
+        if (scan_code < 79) // Скан-коды выше 128 - это отпускание клавиши
+            if (scan_code == 14){
+                char c = scan_code_to_symbol[scan_code];
+                char* ghopa = &c;
+                out_str(user_color, ghopa, 7);
+                const char* hello = "Welcome to HelloWorldOS (gcc edition)!";
+                out_str(0x07, hello, 8);
+                backspace_key();
+            }
+            else if (scan_code == 28)
+                enter_key();
+            else // if (cur_cursor - 2 < MAX_COMMAND_LENGTH)
+                print_symbol(scan_code);
     }
-}
-
-void on_key(unsigned char scan_code)
-{
-    if (scan_code == 14)
-        backspace_key();
-    else if (scan_code == 28)
-        enter_key();
-    else if (cur_cursor - 2 < MAX_COMMAND_LENGTH)
-        print_symbol(scan_code);
 }
 
 void backspace_key()
 {
+    // const char* hello = "Welcome to HelloWorldOS (gcc edition)!";
+    // out_str(0x07, hello, 8);
+
     if (cur_cursor >= START_POSITION)
     {
         cur_cursor--;
@@ -259,24 +271,48 @@ void backspace_key()
 
 void enter_key()
 {
-    command_handler();
+    
+    //command_handler();
     cur_cursor = START_POSITION;
     userinput[cur_cursor] = '\0';
+    const char* hello = userinput;
     out_str(user_color, userinput, current_strnum);
     cursor_moveto(current_strnum, cur_cursor);
 }
 
 void print_symbol(unsigned char scan_code)
 {
-    char input = scan_code_to_ascii(scan_code);
-    if (input == 0)
+    // const char* hello = "Welcome!";   
+    // out_str(0x07, hello, 6);
+
+    char c = scan_code_to_symbol[scan_code];
+    
+    out_str(user_color, &c, 7);
+    if (c == 0)
+        out_str(0x07, "return", 6);
         return;
-    userinput[cur_cursor] = input;
+
+    //const char* hel = "Welcome to";
+    // out_str(0x07, hello, 5);
+    out_str(user_color, &c, 7);
+    // out_str(0x07, hello, 8);
     cur_cursor++;
-    userinput[cur_cursor] = input;
-    out_str(user_color, userinput, current_strnum);
     cursor_moveto(current_strnum, cur_cursor);
 }
+
+// void print_symbol(unsigned char scan_code)
+// {
+//     //const char* hello = "print hui";
+//     //out_str(0x07, hello, 5);
+//     char input = ascii[scan_code];
+//     if (input == 0)
+//         return;
+//     userinput[cur_cursor] = input;
+//     cur_cursor++;
+//     userinput[cur_cursor] = '\0';
+//     out_str(user_color, &input, 5);
+//     cursor_moveto(5, cur_cursor);
+// }
 
 void cursor_moveto(unsigned int strnum, unsigned int pos)
 {
@@ -382,120 +418,25 @@ void unknown_command()
     out_str(user_color, "Error: command not recognized", 0);
 }
 
-
-// Добавить + - = /
-char scan_code_to_ascii(unsigned char scan_code) {
-    unsigned char symbol;
-
-    switch (scan_code) {
-    case 0x02: return '1';
-    case 0x03: return '2';
-    case 0x04:
-    symbol = '3';
-    break;
-    case 0x05:
-    symbol = '4';
-    break;
-    case 0x06:
-    symbol = '5';
-    break;
-    case 0x07:
-    symbol = '6';
-    break;
-    case 0x08:
-    symbol = '7';
-    break;
-    case 0x09:
-    symbol = '8';
-    break;
-    case 0x0A:
-    symbol = '9';
-    break;
-    case 0x0B:
-    symbol = '0';
-    break;
-    case 0x10:
-    symbol = 'q';
-    break;
-    case 0x11:
-    symbol = 'w';
-    break;
-    case 0x12:
-    symbol = 'e';
-    break;
-    case 0x13:
-    symbol = 'r';
-    break;
-    case 0x14:
-    symbol = 't';
-    break;
-    case 0x15:
-    symbol = 'y';
-    break;
-    case 0x16:
-    symbol = 'u';
-    break;
-    case 0x17:
-    symbol = 'i';
-    break;
-    case 0x18:
-    symbol = 'o';
-    break;
-    case 0x19:
-    symbol = 'p';
-    break;
-    case 0x1E:
-    symbol = 'a';
-    break;
-    case 0x1F:
-    symbol = 's';
-    break;
-    case 0x20:
-    symbol = 'd';
-    break;
-    case 0x21:
-    symbol = 'f';
-    break;
-    case 0x22:
-    symbol = 'g';
-    break;
-    case 0x23:
-    symbol = 'h';
-    break;
-    case 0x24:
-    symbol = 'j';
-    break;
-    case 0x25:
-    symbol = 'k';
-    break;
-    case 0x26:
-    symbol = 'l';
-    break;
-    case 0x2C:
-    symbol = 'z';
-    break;
-    case 0x2D:
-    symbol = 'x';
-    break;
-    case 0x2E:
-    symbol = 'c';
-    break;
-    case 0x2F:
-    symbol = 'v';
-    break;
-    case 0x30:
-    symbol = 'b';
-    break;
-    case 0x31:
-    symbol = 'n';
-    break;
-    case 0x32:
-    symbol = 'm';
-    break;
-    default:
-    symbol = 0;
-    break;
+extern "C" int kmain()
+{
+    const char* hello = "Welcome to HelloWorldOS (gcc edition)!";   
+    out_str(0x07, hello, 0);
+    intr_disable();
+    intr_init();
+    out_str(0x07, hello, 1);
+    out_str(user_color, "Error: command not recognized", 0);
+    keyb_init();
+    out_str(0x07, hello, 2);
+    intr_start();
+    intr_enable();
+    // Вывод строки
+    out_str(user_color, "Error: command not recognized", 0);
+    out_str(0x07, hello, 3);
+    // Бесконечный цикл
+    while(1)
+    {
+        asm("hlt");
     }
-
-    return symbol;
+    return 0;
 }
